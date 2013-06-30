@@ -392,8 +392,20 @@ def _col_info(result, info_dict=None):
     out.columns = [str(result.model.endog_names)] 
     return out
 
+def _make_unique(list_of_names):
+    if len(set(list_of_names)) == len(list_of_names):
+        return list_of_names
+    # pandas does not like it if multiple columns have the same names
+    from collections import defaultdict
+    name_counter = defaultdict(str)
+    header = []
+    for _name in list_of_names:
+        name_counter[_name] += "I"
+        header.append(_name+" " +name_counter[_name])
+    return header
+    
 def summary_col(results, float_format='%.4f', model_names=None, stars=True,
-        info_dict=None):
+        info_dict=None, regressor_order=[]):
     '''Add the contents of a Dict to summary table
 
     Parameters
@@ -402,11 +414,15 @@ def summary_col(results, float_format='%.4f', model_names=None, stars=True,
     float_format : string 
         float format for coefficients and standard errors
     model_names : list of strings of length len(results)
+        if the names are not unique, a roman number will be appended to all model names 
     stars : bool
         print significance stars 
     info_dict : dict
         dict of lambda functions to be applied to results instances to retrieve
-        model info 
+        model info
+    regressor_order : list of strings
+        list of names of the regressors in the desired order. All regressors 
+        not specified will be appended to the end of the list.
     '''
 
     # Coerce to list if user feeds a results instance
@@ -414,8 +430,27 @@ def summary_col(results, float_format='%.4f', model_names=None, stars=True,
         results = [results]
     # Params as dataframe columns
     cols = [_col_params(x, stars=stars, float_format=float_format) for x in results]
+    # use unique column names, otherwise the merge will not succeed
+    for df , name in zip(cols, _make_unique([df.columns[0] for df in cols])):
+        df.columns = [name]
     merg = lambda x,y: x.merge(y, how='outer', right_index=True, left_index=True)
     summ = reduce(merg, cols)
+    # reorder the regressors
+    if regressor_order:
+        _new_order = []
+        _old_order = list(summ.index.levels[0])
+        for element in regressor_order:
+            _new_order.append(element)
+            try:
+                _old_order.remove(element)
+            except ValueError:
+                raise Exception("'%s' is not a known regressor (known: %s)" % (element, list(summ.index.levels[0])))
+        _new_order.extend(_old_order)
+        _new_index = []
+        for _lvl0 in _new_order:
+            for _lvl1 in summ.index.levels[1]:
+                _new_index.append((_lvl0, _lvl1))
+        summ = summ.reindex(_new_index)
     # Index
     idx1 = summ.index.get_level_values(0).tolist()
     idx2 = range(1,len(idx1),2)
@@ -423,23 +458,16 @@ def summary_col(results, float_format='%.4f', model_names=None, stars=True,
         idx1[i] = ''
     summ.index = pd.Index(idx1)
     # Header
-    if model_names == None:
-        header = []
-        try:
-            for r in results:
-                header.append(r.model.endog_names)
-        except:
-            i = 0
-            for r in results:
-                header.append('Model ' + i)
-                i += 1
-    else:
-        header = model_names
-    summ.columns = pd.Index(header)
+    if model_names != None:
+        summ.columns = pd.Index(_make_unique(model_names))
     summ = summ.fillna('')
+    
 
     # Info as dataframe columns
     cols = [_col_info(x, info_dict) for x in results]
+    # use unique column names, otherwise the merge will not succeed
+    for df , name in zip(cols, _make_unique([df.columns[0] for df in cols])):
+        df.columns = [name]
     merg = lambda x,y: x.merge(y, how='outer', right_index=True, left_index=True)
     info = reduce(merg, cols)
     dat = pd.DataFrame(np.vstack([summ,info])) # pd.concat better, but error
